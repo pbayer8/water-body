@@ -4,23 +4,70 @@ import type { BodySegmenter } from "@tensorflow-models/body-segmentation";
 import { useEffect, useRef, useState } from "react";
 import {
   type CpuCompositeScratch,
-  drawSegmentationComposite,
+  createMaskFrameFromSegmentations,
   initCpuCompositeScratch,
-  mergeSegmentationsToMask,
+  type MaskFrame,
   type SegmentationItem,
-  type VisualMode,
 } from "@/lib/segmentation/cpuComposite";
-
-const MODES: { id: VisualMode; label: string }[] = [
-  { id: "none", label: "Passthrough (no model)" },
-  { id: "mask", label: "Mask preview" },
-  { id: "cutout", label: "Hard cutout" },
-  { id: "blur", label: "Blurred background" },
-  { id: "replace", label: "Replace background" },
-  { id: "transparent", label: "Transparent (alpha)" },
-];
+import {
+  DEFAULT_WATER_SETTINGS,
+  WaterRenderer,
+  type WaterSettings,
+} from "@/lib/water/waterRenderer";
 
 const SEGMENT_INTERVAL_MS = 1000 / 12;
+
+type SliderConfig = {
+  key: keyof WaterSettings;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+};
+
+const SLIDERS: { title: string; controls: SliderConfig[] }[] = [
+  {
+    title: "Resolution",
+    controls: [
+      { key: "renderScale", label: "Render scale", min: 0.5, max: 2.5, step: 0.1 },
+      { key: "simSize", label: "Water grid", min: 128, max: 768, step: 64 },
+    ],
+  },
+  {
+    title: "Body Mask",
+    controls: [
+      { key: "maskThreshold", label: "Mask threshold", min: 0.05, max: 0.95, step: 0.01 },
+      { key: "maskFeather", label: "Edge feather", min: 0.001, max: 0.2, step: 0.001 },
+      { key: "waterFill", label: "Body fill", min: 0.05, max: 0.95, step: 0.01 },
+    ],
+  },
+  {
+    title: "Physics",
+    controls: [
+      { key: "waveSpeed", label: "Wave speed", min: 0.05, max: 0.9, step: 0.01 },
+      { key: "damping", label: "Damping", min: 0.9, max: 0.999, step: 0.001 },
+      { key: "restoringForce", label: "Restoring force", min: 0, max: 0.08, step: 0.001 },
+      { key: "motionImpulse", label: "Body impulse", min: 0, max: 3, step: 0.05 },
+      { key: "edgeImpulse", label: "Edge impulse", min: 0, max: 2, step: 0.05 },
+    ],
+  },
+  {
+    title: "Surface",
+    controls: [
+      { key: "surfaceSplash", label: "Splashiness", min: 0, max: 4, step: 0.05 },
+      { key: "surfaceWidth", label: "Surface width", min: 0.002, max: 0.1, step: 0.001 },
+      { key: "surfaceNoise", label: "Surface noise", min: 0, max: 0.05, step: 0.001 },
+      { key: "surfaceChop", label: "Surface chop", min: 0, max: 0.18, step: 0.002 },
+    ],
+  },
+  {
+    title: "Water",
+    controls: [
+      { key: "waterBrightness", label: "Brightness", min: 0.2, max: 2, step: 0.02 },
+      { key: "waterAlpha", label: "Camera mix", min: 0.1, max: 1, step: 0.01 },
+    ],
+  },
+];
 
 function hasRenderableVideoFrame(video: HTMLVideoElement): boolean {
   const width = Math.trunc(video.videoWidth);
@@ -69,13 +116,14 @@ export function SegmentationDemo() {
   const scratchRef = useRef<CpuCompositeScratch | null>(null);
 
   const [segmenter, setSegmenter] = useState<BodySegmenter | null>(null);
-
-  const [mode, setMode] = useState<VisualMode>("blur");
-  const [threshold, setThreshold] = useState(0.5);
-  const [mirrorSegmentation, setMirrorSegmentation] = useState(false);
-
+  const [settings, setSettings] = useState<WaterSettings>(DEFAULT_WATER_SETTINGS);
+  const settingsRef = useRef(settings);
   const [status, setStatus] = useState<string>("Starting…");
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   useEffect(() => {
     scratchRef.current = initCpuCompositeScratch();
@@ -178,16 +226,21 @@ export function SegmentationDemo() {
     let raf = 0;
     let lastSegmentationTime = 0;
     let segmenting = false;
-    let latestMask: ImageData | null = null;
+    let latestMask: MaskFrame | null = null;
+    let renderer: WaterRenderer;
 
-    const tick = async () => {
+    try {
+      renderer = new WaterRenderer(canvas);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not initialize WebGL2.");
+      return;
+    }
+
+    const tick = (now: number) => {
       if (!alive) return;
       try {
         if (hasRenderableVideoFrame(video)) {
-          const now = performance.now();
-
           if (
-            mode !== "none" &&
             !segmenting &&
             now - lastSegmentationTime >= SEGMENT_INTERVAL_MS
           ) {
@@ -196,23 +249,26 @@ export function SegmentationDemo() {
 
             segmenter
               .segmentPeople(video, {
-                flipHorizontal: mirrorSegmentation,
+                flipHorizontal: false,
               })
               .then(async (people) => {
                 try {
                   if (!alive) return;
 
+                  const activeSettings = settingsRef.current;
                   latestMask = people.length
-                    ? await mergeSegmentationsToMask(
+                    ? await createMaskFrameFromSegmentations(
                         people,
                         video.videoWidth,
                         video.videoHeight,
                         scratch,
+                        activeSettings.maskThreshold,
                       )
                     : null;
                   if (alive) {
                     setStatus((s) => (s === "Ready" ? s : "Ready"));
                   }
+                  renderer.setMaskFrame(latestMask);
                 } finally {
                   void disposeSegmentations(people);
                 }
@@ -225,121 +281,102 @@ export function SegmentationDemo() {
               });
           }
 
-          await drawSegmentationComposite(
-            video,
-            mode === "none" ? null : latestMask,
-            canvas,
-            mode,
-            threshold,
-            scratch,
-          );
+          renderer.setSettings(settingsRef.current);
+          renderer.render(video, now);
         }
       } catch (e) {
         console.error(e);
       }
-      raf = requestAnimationFrame(() => void tick());
+      raf = requestAnimationFrame(tick);
     };
 
-    tick();
+    raf = requestAnimationFrame(tick);
 
     return () => {
       alive = false;
       cancelAnimationFrame(raf);
+      renderer.dispose();
     };
-  }, [segmenter, mode, threshold, mirrorSegmentation]);
-
-  const showChecker = mode === "transparent";
+  }, [segmenter]);
 
   return (
-    <div className="flex w-full max-w-4xl flex-col gap-6">
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Body segmentation prototype
-        </h1>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Webcam → TensorFlow.js selfie segmentation (TF Hub model) → CPU canvas
-          composite (phases 1–3).
-        </p>
-        <p
-          className="text-xs font-medium text-zinc-500 dark:text-zinc-500"
-          aria-live="polite"
-        >
-          {status}
-        </p>
-        {error ? (
-          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-            {error}
-          </p>
-        ) : null}
-      </header>
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-black">
+      <canvas
+        ref={canvasRef}
+        id="output"
+        aria-label="Camera view with body-tracked water simulation"
+        className="h-screen w-screen bg-black object-contain"
+      />
 
-      <div className="flex flex-col gap-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950 sm:flex-row sm:flex-wrap sm:items-end">
-        <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-sm">
-          <span className="text-zinc-600 dark:text-zinc-400">Visual mode</span>
-          <select
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as VisualMode)}
+      <video
+        ref={videoRef}
+        id="video"
+        className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+        autoPlay
+        muted
+        playsInline
+      />
+
+      <p className="sr-only" aria-live="polite">
+        {status}
+      </p>
+
+      {error ? (
+        <div className="absolute inset-x-6 top-6 rounded-2xl border border-red-500/40 bg-black/80 px-4 py-3 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
+
+      <aside className="absolute right-4 top-4 max-h-[calc(100vh-2rem)] w-80 overflow-y-auto rounded-2xl border border-white/15 bg-black/70 p-4 text-white shadow-2xl backdrop-blur-md">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-sm font-semibold tracking-wide">Water tuning</h1>
+            <p className="text-xs text-white/60">Live shader controls</p>
+          </div>
+          <button
+            type="button"
+            className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/80 transition hover:bg-white/10"
+            onClick={() => setSettings(DEFAULT_WATER_SETTINGS)}
           >
-            {MODES.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-sm">
-          <span className="text-zinc-600 dark:text-zinc-400">
-            Person threshold{" "}
-            <span className="tabular-nums">({threshold.toFixed(2)})</span>
-          </span>
-          <input
-            type="range"
-            min={0.2}
-            max={0.85}
-            step={0.01}
-            value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            className="h-2 w-full cursor-pointer accent-zinc-900 dark:accent-zinc-100"
-          />
-        </label>
-
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-          <input
-            type="checkbox"
-            checked={mirrorSegmentation}
-            onChange={(e) => setMirrorSegmentation(e.target.checked)}
-            className="size-4 rounded border-zinc-400"
-          />
-          Mirror segmentation (maps to front-facing webcam)
-        </label>
-      </div>
-
-      <div className="flex flex-col items-center gap-4">
-        <div
-          className={
-            showChecker
-              ? "rounded-xl p-2 [background-image:linear-gradient(45deg,#ccc_25%,transparent_25%),linear-gradient(-45deg,#ccc_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#ccc_75%),linear-gradient(-45deg,transparent_75%,#ccc_75%)] [background-position:0_0,0_10px,10px_-10px,-10px_0] [background-size:20px_20px]"
-              : "rounded-xl bg-black p-2"
-          }
-        >
-          <canvas
-            ref={canvasRef}
-            id="output"
-            className="max-h-[min(70vh,720px)] w-full max-w-full object-contain"
-          />
+            Reset
+          </button>
         </div>
 
-        <video
-          ref={videoRef}
-          id="video"
-          className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
-          autoPlay
-          muted
-          playsInline
-        />
-      </div>
-    </div>
+        <div className="space-y-5">
+          {SLIDERS.map((group) => (
+            <section key={group.title} className="space-y-3">
+              <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-white/45">
+                {group.title}
+              </h2>
+              {group.controls.map((control) => (
+                <label key={control.key} className="block space-y-1.5">
+                  <span className="flex items-center justify-between gap-3 text-xs text-white/75">
+                    <span>{control.label}</span>
+                    <span className="font-mono text-white/50">
+                      {settings[control.key].toFixed(control.step < 0.01 ? 3 : 2)}
+                    </span>
+                  </span>
+                  <input
+                    type="range"
+                    min={control.min}
+                    max={control.max}
+                    step={control.step}
+                    value={settings[control.key]}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      setSettings((current) => ({
+                        ...current,
+                        [control.key]: value,
+                      }));
+                    }}
+                    className="w-full accent-blue-400"
+                  />
+                </label>
+              ))}
+            </section>
+          ))}
+        </div>
+      </aside>
+    </main>
   );
 }
