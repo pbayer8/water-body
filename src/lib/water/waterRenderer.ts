@@ -1,5 +1,5 @@
-import type { MaskFrame } from "@/lib/segmentation/cpuComposite";
 import * as twgl from "twgl.js";
+import type { MaskFrame } from "@/lib/segmentation/cpuComposite";
 
 type GL = WebGL2RenderingContext;
 
@@ -254,7 +254,11 @@ function createTexture(gl: GL, width: number, height: number): WebGLTexture {
   return texture;
 }
 
-function createFloatTarget(gl: GL, width: number, height: number): RenderTarget {
+function createFloatTarget(
+  gl: GL,
+  width: number,
+  height: number,
+): RenderTarget {
   const texture = gl.createTexture();
   const framebuffer = gl.createFramebuffer();
   if (!texture || !framebuffer) {
@@ -324,7 +328,9 @@ export class WaterRenderer {
 
     this.gl = context;
     if (!this.gl.getExtension("EXT_color_buffer_float")) {
-      throw new Error("EXT_color_buffer_float is required for the water simulation.");
+      throw new Error(
+        "EXT_color_buffer_float is required for the water simulation.",
+      );
     }
 
     this.quad = twgl.createBufferInfoFromArrays(this.gl, {
@@ -345,8 +351,16 @@ export class WaterRenderer {
     this.videoTexture = createTexture(this.gl, 1, 1);
     this.maskTexture = createTexture(this.gl, 1, 1);
     this.previousMaskTexture = createTexture(this.gl, 1, 1);
-    this.readTarget = createFloatTarget(this.gl, this.settings.simSize, this.settings.simSize);
-    this.writeTarget = createFloatTarget(this.gl, this.settings.simSize, this.settings.simSize);
+    this.readTarget = createFloatTarget(
+      this.gl,
+      this.settings.simSize,
+      this.settings.simSize,
+    );
+    this.writeTarget = createFloatTarget(
+      this.gl,
+      this.settings.simSize,
+      this.settings.simSize,
+    );
 
     this.gl.disable(this.gl.DEPTH_TEST);
     this.gl.disable(this.gl.BLEND);
@@ -381,8 +395,14 @@ export class WaterRenderer {
     const height = Math.trunc(video.videoHeight);
     if (width < 1 || height < 1) return;
 
-    const renderWidth = Math.max(1, Math.round(width * this.settings.renderScale));
-    const renderHeight = Math.max(1, Math.round(height * this.settings.renderScale));
+    const renderWidth = Math.max(
+      1,
+      Math.round(width * this.settings.renderScale),
+    );
+    const renderHeight = Math.max(
+      1,
+      Math.round(height * this.settings.renderScale),
+    );
     if (this.canvas.width !== renderWidth) this.canvas.width = renderWidth;
     if (this.canvas.height !== renderHeight) this.canvas.height = renderHeight;
 

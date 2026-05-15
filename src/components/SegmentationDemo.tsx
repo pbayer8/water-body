@@ -2,6 +2,7 @@
 
 import type { BodySegmenter } from "@tensorflow-models/body-segmentation";
 import { useEffect, useRef, useState } from "react";
+import type { Pane } from "tweakpane";
 import {
   type CpuCompositeScratch,
   createMaskFrameFromSegmentations,
@@ -14,6 +15,9 @@ import {
   WaterRenderer,
   type WaterSettings,
 } from "@/lib/water/waterRenderer";
+
+const IS_LOCAL_DEV =
+  typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
 const SEGMENT_INTERVAL_MS = 1000 / 12;
 
@@ -29,41 +33,113 @@ const SLIDERS: { title: string; controls: SliderConfig[] }[] = [
   {
     title: "Resolution",
     controls: [
-      { key: "renderScale", label: "Render scale", min: 0.5, max: 2.5, step: 0.1 },
+      {
+        key: "renderScale",
+        label: "Render scale",
+        min: 0.5,
+        max: 2.5,
+        step: 0.1,
+      },
       { key: "simSize", label: "Water grid", min: 128, max: 768, step: 64 },
     ],
   },
   {
     title: "Body Mask",
     controls: [
-      { key: "maskThreshold", label: "Mask threshold", min: 0.05, max: 0.95, step: 0.01 },
-      { key: "maskFeather", label: "Edge feather", min: 0.001, max: 0.2, step: 0.001 },
-      { key: "waterFill", label: "Body fill", min: 0.05, max: 0.95, step: 0.01 },
+      {
+        key: "maskThreshold",
+        label: "Mask threshold",
+        min: 0.05,
+        max: 0.95,
+        step: 0.01,
+      },
+      {
+        key: "maskFeather",
+        label: "Edge feather",
+        min: 0.001,
+        max: 0.2,
+        step: 0.001,
+      },
+      {
+        key: "waterFill",
+        label: "Body fill",
+        min: 0.05,
+        max: 0.95,
+        step: 0.01,
+      },
     ],
   },
   {
     title: "Physics",
     controls: [
-      { key: "waveSpeed", label: "Wave speed", min: 0.05, max: 0.9, step: 0.01 },
+      {
+        key: "waveSpeed",
+        label: "Wave speed",
+        min: 0.05,
+        max: 0.9,
+        step: 0.01,
+      },
       { key: "damping", label: "Damping", min: 0.9, max: 0.999, step: 0.001 },
-      { key: "restoringForce", label: "Restoring force", min: 0, max: 0.08, step: 0.001 },
-      { key: "motionImpulse", label: "Body impulse", min: 0, max: 3, step: 0.05 },
+      {
+        key: "restoringForce",
+        label: "Restoring force",
+        min: 0,
+        max: 0.08,
+        step: 0.001,
+      },
+      {
+        key: "motionImpulse",
+        label: "Body impulse",
+        min: 0,
+        max: 3,
+        step: 0.05,
+      },
       { key: "edgeImpulse", label: "Edge impulse", min: 0, max: 2, step: 0.05 },
     ],
   },
   {
     title: "Surface",
     controls: [
-      { key: "surfaceSplash", label: "Splashiness", min: 0, max: 4, step: 0.05 },
-      { key: "surfaceWidth", label: "Surface width", min: 0.002, max: 0.1, step: 0.001 },
-      { key: "surfaceNoise", label: "Surface noise", min: 0, max: 0.05, step: 0.001 },
-      { key: "surfaceChop", label: "Surface chop", min: 0, max: 0.18, step: 0.002 },
+      {
+        key: "surfaceSplash",
+        label: "Splashiness",
+        min: 0,
+        max: 4,
+        step: 0.05,
+      },
+      {
+        key: "surfaceWidth",
+        label: "Surface width",
+        min: 0.002,
+        max: 0.1,
+        step: 0.001,
+      },
+      {
+        key: "surfaceNoise",
+        label: "Surface noise",
+        min: 0,
+        max: 0.05,
+        step: 0.001,
+      },
+      {
+        key: "surfaceChop",
+        label: "Surface chop",
+        min: 0,
+        max: 0.18,
+        step: 0.002,
+      },
     ],
   },
   {
     title: "Water",
     controls: [
-      { key: "waterBrightness", label: "Brightness", min: 0.2, max: 2, step: 0.02 },
+      {
+        key: "waterBrightness",
+        label: "Brightness",
+        min: 0.2,
+        max: 2,
+        step: 0.02,
+      },
       { key: "waterAlpha", label: "Camera mix", min: 0.1, max: 1, step: 0.01 },
     ],
   },
@@ -116,14 +192,82 @@ export function SegmentationDemo() {
   const scratchRef = useRef<CpuCompositeScratch | null>(null);
 
   const [segmenter, setSegmenter] = useState<BodySegmenter | null>(null);
-  const [settings, setSettings] = useState<WaterSettings>(DEFAULT_WATER_SETTINGS);
+  const [settings, setSettings] = useState<WaterSettings>(
+    DEFAULT_WATER_SETTINGS,
+  );
   const settingsRef = useRef(settings);
+  const tweakpaneParamsRef = useRef<WaterSettings>({
+    ...DEFAULT_WATER_SETTINGS,
+  });
+  const tweakpanePaneRef = useRef<Pane | null>(null);
   const [status, setStatus] = useState<string>("Starting…");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    if (!IS_LOCAL_DEV) return;
+    Object.assign(tweakpaneParamsRef.current, settings);
+    tweakpanePaneRef.current?.refresh();
+  }, [settings]);
+
+  useEffect(() => {
+    if (!IS_LOCAL_DEV) return;
+
+    Object.assign(tweakpaneParamsRef.current, settingsRef.current);
+
+    let cancelled = false;
+    void import("tweakpane").then(({ Pane: Tweakpane }) => {
+      if (cancelled) return;
+
+      const pane = new Tweakpane({
+        title: "Water tuning",
+        expanded: true,
+      });
+      tweakpanePaneRef.current = pane;
+
+      const paneEl = pane.element;
+      paneEl.style.position = "fixed";
+      paneEl.style.top = "1rem";
+      paneEl.style.right = "1rem";
+      paneEl.style.maxHeight = "calc(100vh - 2rem)";
+      paneEl.style.overflowY = "auto";
+      paneEl.style.zIndex = "40";
+
+      for (const group of SLIDERS) {
+        const folder = pane.addFolder({
+          title: group.title,
+          expanded: true,
+        });
+        for (const c of group.controls) {
+          folder.addBinding(tweakpaneParamsRef.current, c.key, {
+            label: c.label,
+            min: c.min,
+            max: c.max,
+            step: c.step,
+          });
+        }
+      }
+
+      pane.addButton({ title: "Reset" }).on("click", () => {
+        Object.assign(tweakpaneParamsRef.current, DEFAULT_WATER_SETTINGS);
+        pane.refresh();
+        setSettings({ ...DEFAULT_WATER_SETTINGS });
+      });
+
+      pane.on("change", () => {
+        setSettings({ ...tweakpaneParamsRef.current });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      tweakpanePaneRef.current?.dispose();
+      tweakpanePaneRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     scratchRef.current = initCpuCompositeScratch();
@@ -326,57 +470,6 @@ export function SegmentationDemo() {
           {error}
         </div>
       ) : null}
-
-      <aside className="absolute right-4 top-4 max-h-[calc(100vh-2rem)] w-80 overflow-y-auto rounded-2xl border border-white/15 bg-black/70 p-4 text-white shadow-2xl backdrop-blur-md">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-sm font-semibold tracking-wide">Water tuning</h1>
-            <p className="text-xs text-white/60">Live shader controls</p>
-          </div>
-          <button
-            type="button"
-            className="rounded-full border border-white/20 px-3 py-1 text-xs text-white/80 transition hover:bg-white/10"
-            onClick={() => setSettings(DEFAULT_WATER_SETTINGS)}
-          >
-            Reset
-          </button>
-        </div>
-
-        <div className="space-y-5">
-          {SLIDERS.map((group) => (
-            <section key={group.title} className="space-y-3">
-              <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-white/45">
-                {group.title}
-              </h2>
-              {group.controls.map((control) => (
-                <label key={control.key} className="block space-y-1.5">
-                  <span className="flex items-center justify-between gap-3 text-xs text-white/75">
-                    <span>{control.label}</span>
-                    <span className="font-mono text-white/50">
-                      {settings[control.key].toFixed(control.step < 0.01 ? 3 : 2)}
-                    </span>
-                  </span>
-                  <input
-                    type="range"
-                    min={control.min}
-                    max={control.max}
-                    step={control.step}
-                    value={settings[control.key]}
-                    onChange={(e) => {
-                      const value = Number(e.target.value);
-                      setSettings((current) => ({
-                        ...current,
-                        [control.key]: value,
-                      }));
-                    }}
-                    className="w-full accent-blue-400"
-                  />
-                </label>
-              ))}
-            </section>
-          ))}
-        </div>
-      </aside>
     </main>
   );
 }
