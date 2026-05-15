@@ -37,28 +37,28 @@ importers:
         specifier: 2.2.0
         version: 2.2.0
       '@tailwindcss/postcss':
-        specifier: ^4
+        specifier: ^4.3.0
         version: 4.3.0
       '@tweakpane/core':
         specifier: ^2.0.5
         version: 2.0.5
       '@types/node':
-        specifier: ^20
+        specifier: ^20.19.41
         version: 20.19.41
       '@types/react':
-        specifier: ^19
+        specifier: ^19.2.14
         version: 19.2.14
       '@types/react-dom':
-        specifier: ^19
+        specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.14)
       tailwindcss:
-        specifier: ^4
+        specifier: ^4.3.0
         version: 4.3.0
       tweakpane:
         specifier: ^4.0.5
         version: 4.0.5
       typescript:
-        specifier: ^5
+        specifier: ^5.9.3
         version: 5.9.3
 
 packages:
