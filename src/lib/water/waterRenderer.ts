@@ -23,30 +23,82 @@ export type WaterSettings = {
   edgeImpulse: number;
   surfaceSplash: number;
   surfaceWidth: number;
-  surfaceNoise: number;
-  surfaceChop: number;
+  surfaceNoiseAmplitude: number;
+  surfaceNoiseFrequency: number;
+  surfaceChopAmplitude: number;
+  surfaceChopFrequency: number;
   waterBrightness: number;
   waterAlpha: number;
+  /** Body tint (linear 0–1 channels; Tweakpane color). */
+  waterColor: { r: number; g: number; b: number };
+  /** Fresnel / normal-highlight strength. */
+  waterGlint: number;
+  /** Fine moving highlights on the surface. */
+  waterShimmer: number;
+  /** Bright foam / splash streak along the waterline. */
+  waterFoam: number;
+  /** 0 = grayscale water, 1 = default, >1 exaggerates chroma. */
+  waterSaturation: number;
+  /** Width of the air–water blend (matches legacy ~0.016). */
+  waterSurfaceBlend: number;
+  /**
+   * Time constant (ms) for the displayed mask to ease toward each new segmentation.
+   * 0 = no temporal smoothing (mask snaps every segmentation tick).
+   */
+  maskTemporalHalfLifeMs: number;
+  /**
+   * Integer pixel radius for separable box blur before hard thresholding the mask.
+   * 0 = use raw model probabilities (no blur+threshold pass).
+   */
+  maskBlurRadius: number;
 };
 
 export const DEFAULT_WATER_SETTINGS: WaterSettings = {
-  waterFill: 0.7,
-  maskThreshold: 0.5,
-  maskFeather: 0.055,
-  renderScale: 1.5,
-  simSize: 384,
-  waveSpeed: 0.42,
-  damping: 0.985,
-  restoringForce: 0.018,
-  motionImpulse: 0.9,
-  edgeImpulse: 0.26,
-  surfaceSplash: 1.2,
-  surfaceWidth: 0.024,
-  surfaceNoise: 0.009,
-  surfaceChop: 0.055,
-  waterBrightness: 1,
-  waterAlpha: 0.96,
+  waterFill: 0.5,
+  maskThreshold: 0.95,
+  maskFeather: 0.001,
+  renderScale: 1,
+  simSize: 320,
+  waveSpeed: 0.2,
+  damping: 0.98,
+  restoringForce: 0.04,
+  motionImpulse: 2,
+  edgeImpulse: 1.01,
+  surfaceSplash: 1.05,
+  surfaceWidth: 0.02,
+  surfaceNoiseAmplitude: 0.01,
+  surfaceNoiseFrequency: 1,
+  surfaceChopAmplitude: 0.015,
+  surfaceChopFrequency: 0,
+  waterBrightness: 1.6,
+  waterAlpha: 0.7,
+  waterColor: { r: 0.02, g: 0.18, b: 0.72 },
+  waterGlint: 1,
+  waterShimmer: 1,
+  waterFoam: 1,
+  waterSaturation: 1,
+  waterSurfaceBlend: 0.016,
+  maskTemporalHalfLifeMs: 90,
+  maskBlurRadius: 0,
 };
+
+/** Clone for React state / immutable snapshots (nested `waterColor` is copied). */
+export function cloneWaterSettings(settings: WaterSettings): WaterSettings {
+  return { ...settings, waterColor: { ...settings.waterColor } };
+}
+
+/**
+ * Copy into an existing settings object (e.g. Tweakpane's bound params) without
+ * replacing the `waterColor` object identity.
+ */
+export function assignWaterSettings(
+  target: WaterSettings,
+  source: WaterSettings,
+): void {
+  const { waterColor, ...rest } = source;
+  Object.assign(target, rest);
+  Object.assign(target.waterColor, waterColor);
+}
 
 function clampSettings(settings: WaterSettings): WaterSettings {
   return {
@@ -62,10 +114,24 @@ function clampSettings(settings: WaterSettings): WaterSettings {
     edgeImpulse: Math.min(2, Math.max(0, settings.edgeImpulse)),
     surfaceSplash: Math.min(4, Math.max(0, settings.surfaceSplash)),
     surfaceWidth: Math.min(0.1, Math.max(0.002, settings.surfaceWidth)),
-    surfaceNoise: Math.min(0.05, Math.max(0, settings.surfaceNoise)),
-    surfaceChop: Math.min(0.18, Math.max(0, settings.surfaceChop)),
+    surfaceNoiseAmplitude: Math.min(0.05, Math.max(0, settings.surfaceNoiseAmplitude)),
+    surfaceNoiseFrequency: Math.min(6, Math.max(0, settings.surfaceNoiseFrequency)),
+    surfaceChopAmplitude: Math.min(0.18, Math.max(0, settings.surfaceChopAmplitude)),
+    surfaceChopFrequency: Math.min(12, Math.max(0, settings.surfaceChopFrequency)),
     waterBrightness: Math.min(2, Math.max(0.2, settings.waterBrightness)),
     waterAlpha: Math.min(1, Math.max(0.1, settings.waterAlpha)),
+    waterColor: {
+      r: Math.min(1, Math.max(0, settings.waterColor.r)),
+      g: Math.min(1, Math.max(0, settings.waterColor.g)),
+      b: Math.min(1, Math.max(0, settings.waterColor.b)),
+    },
+    waterGlint: Math.min(2.5, Math.max(0, settings.waterGlint)),
+    waterShimmer: Math.min(2.5, Math.max(0, settings.waterShimmer)),
+    waterFoam: Math.min(2.5, Math.max(0, settings.waterFoam)),
+    waterSaturation: Math.min(2, Math.max(0, settings.waterSaturation)),
+    waterSurfaceBlend: Math.min(0.08, Math.max(0.002, settings.waterSurfaceBlend)),
+    maskTemporalHalfLifeMs: Math.min(800, Math.max(0, settings.maskTemporalHalfLifeMs)),
+    maskBlurRadius: Math.min(24, Math.max(0, Math.round(settings.maskBlurRadius))),
   };
 }
 
@@ -162,11 +228,19 @@ uniform float uWaterlineTop;
 uniform float uTime;
 uniform float uMaskThreshold;
 uniform float uMaskFeather;
-uniform float uSurfaceNoise;
-uniform float uSurfaceChop;
+uniform float uSurfaceNoiseAmp;
+uniform float uSurfaceNoiseFreq;
+uniform float uSurfaceChopAmp;
+uniform float uSurfaceChopFreq;
 uniform float uSurfaceWidth;
 uniform float uWaterBrightness;
 uniform float uWaterAlpha;
+uniform vec3 uWaterBase;
+uniform float uWaterGlint;
+uniform float uWaterShimmer;
+uniform float uWaterFoam;
+uniform float uWaterSaturation;
+uniform float uWaterSurfaceBlend;
 
 vec4 cameraColor(vec2 uv) {
   vec2 imageUv = vec2(uv.x, 1.0 - uv.y);
@@ -181,22 +255,30 @@ float maskValue(vec2 uv) {
 void main() {
   vec2 imageUv = vec2(vUv.x, 1.0 - vUv.y);
   float mask = texture(uMask, imageUv).r;
-  float personAlpha = smoothstep(uMaskThreshold - uMaskFeather, uMaskThreshold + uMaskFeather, mask);
+  // Feather only the outer (background) side of the threshold so wide bands do not
+  // pull interior mask values into a mid-alpha ramp (which dims the whole silhouette).
+  float innerEdge = uMaskThreshold + max(0.002, min(0.05, uMaskFeather * 0.2));
+  float personAlpha = smoothstep(uMaskThreshold - uMaskFeather, innerEdge, mask);
 
   if (personAlpha <= 0.001) {
-    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    outColor = vec4(cameraColor(vUv).rgb, 1.0);
     return;
   }
 
   float h = texture(uState, vUv).r;
+  float nFreq = uSurfaceNoiseFreq;
   float surfaceNoise =
-    sin(vUv.x * 31.0 + uTime * 0.004) * uSurfaceNoise +
-    sin(vUv.x * 67.0 - uTime * 0.007) * uSurfaceNoise * 0.5;
-  float surfaceHeight = clamp(uWaterlineTop + h * uSurfaceChop + surfaceNoise, 0.0, 1.0);
+    sin(vUv.x * 31.0 * nFreq + uTime * 0.004 * nFreq) * uSurfaceNoiseAmp +
+    sin(vUv.x * 67.0 * nFreq - uTime * 0.007 * nFreq) * uSurfaceNoiseAmp * 0.5;
+  float chopWobble =
+    1.0 + 0.4 * sin(vUv.x * 20.0 * uSurfaceChopFreq + uTime * 0.003 * uSurfaceChopFreq);
+  float surfaceHeight =
+    clamp(uWaterlineTop + h * uSurfaceChopAmp * chopWobble + surfaceNoise, 0.0, 1.0);
   float surfaceDistance = imageUv.y - surfaceHeight;
 
   if (surfaceDistance < -0.004) {
-    outColor = vec4(cameraColor(vUv).rgb * personAlpha, 1.0);
+    // Full camera here — multiplying by personAlpha darkened edges/background to black.
+    outColor = vec4(cameraColor(vUv).rgb, 1.0);
     return;
   }
 
@@ -208,18 +290,30 @@ void main() {
 
   float glint = smoothstep(0.08, 0.28, length(normal));
   float wave = 0.5 + 0.5 * sin((vUv.y + h * 0.2) * 70.0 + h * 18.0);
-  vec3 blue = vec3(0.02, 0.18, 0.72);
-  vec3 color = (blue + vec3(0.02, 0.07, 0.18) * glint + vec3(0.015) * wave) * uWaterBrightness;
+  vec3 glintTint = vec3(0.02, 0.07, 0.18);
+  vec3 waveTint = vec3(0.015);
+  vec3 color =
+    (uWaterBase + glintTint * glint * uWaterGlint + waveTint * wave * uWaterShimmer) *
+    uWaterBrightness;
   float surfaceLine = exp(-pow(surfaceDistance / max(0.002, uSurfaceWidth * 0.28), 2.0));
   float splash = surfaceLine * smoothstep(0.015, 0.14, abs(h) + length(normal) * 0.7);
-  color += vec3(0.05, 0.12, 0.24) * surfaceLine;
-  color += vec3(0.08, 0.18, 0.32) * splash;
+  vec3 foamA = vec3(0.05, 0.12, 0.24);
+  vec3 foamB = vec3(0.08, 0.18, 0.32);
+  color += foamA * surfaceLine * uWaterFoam;
+  color += foamB * splash * uWaterFoam;
 
-  float airFade = smoothstep(surfaceHeight - 0.006, surfaceHeight + 0.026, imageUv.y);
+  float luma = dot(color, vec3(0.299, 0.587, 0.114));
+  color = mix(vec3(luma), color, clamp(uWaterSaturation, 0.0, 2.0));
+
+  float airNear = uWaterSurfaceBlend * 0.375;
+  float airFar = uWaterSurfaceBlend * 1.625;
+  float airFade = smoothstep(surfaceHeight - airNear, surfaceHeight + airFar, imageUv.y);
   vec3 topColor = cameraColor(vUv).rgb;
   color = mix(topColor, color, airFade * uWaterAlpha);
 
-  outColor = vec4(color * personAlpha, 1.0);
+  // Blend silhouette to camera by mask — avoid color * personAlpha (crushes to black on edges).
+  vec3 composited = mix(cameraColor(vUv).rgb, color, personAlpha);
+  outColor = vec4(composited, 1.0);
 }`;
 
 function assertWebGL2(
@@ -311,8 +405,13 @@ export class WaterRenderer {
   private readonly previousMaskTexture: WebGLTexture;
   private readTarget: RenderTarget;
   private writeTarget: RenderTarget;
-  private currentMask: MaskFrame | null = null;
-  private previousMask: ImageData | null = null;
+  /** Latest mask from segmentation (may update at a low rate). */
+  private targetMask: MaskFrame | null = null;
+  /** GPU-facing mask after temporal easing (same size as video mask). */
+  private displayMask: ImageData | null = null;
+  /** Copy of the mask uploaded last frame (for motion / edge detection). */
+  private prevDisplayMask: ImageData | null = null;
+  private lastMaskRenderTime = 0;
   private settings = DEFAULT_WATER_SETTINGS;
   private pendingImpulse = false;
 
@@ -377,16 +476,35 @@ export class WaterRenderer {
   }
 
   setMaskFrame(frame: MaskFrame | null): void {
-    if (frame === this.currentMask) return;
+    if (!frame) {
+      this.targetMask = null;
+      this.displayMask = null;
+      this.prevDisplayMask = null;
+      this.lastMaskRenderTime = 0;
+      return;
+    }
 
-    const previous = this.currentMask?.imageData ?? this.previousMask;
-    this.currentMask = frame;
+    const sizeChanged =
+      !this.displayMask ||
+      this.displayMask.width !== frame.width ||
+      this.displayMask.height !== frame.height;
 
-    if (!frame) return;
+    this.targetMask = frame;
 
-    this.uploadImageData(this.maskTexture, frame.imageData);
-    this.uploadImageData(this.previousMaskTexture, previous ?? frame.imageData);
-    this.previousMask = frame.imageData;
+    if (sizeChanged) {
+      this.displayMask = new ImageData(
+        new Uint8ClampedArray(frame.imageData.data),
+        frame.width,
+        frame.height,
+      );
+      this.prevDisplayMask = new ImageData(
+        new Uint8ClampedArray(frame.imageData.data),
+        frame.width,
+        frame.height,
+      );
+      this.lastMaskRenderTime = 0;
+    }
+
     this.pendingImpulse = true;
   }
 
@@ -407,7 +525,12 @@ export class WaterRenderer {
     if (this.canvas.height !== renderHeight) this.canvas.height = renderHeight;
 
     this.uploadVideo(video);
-    if (this.currentMask) this.stepSimulation(now);
+    if (this.targetMask && this.displayMask && this.prevDisplayMask) {
+      this.updateDisplayMaskForFrame(now);
+      this.uploadImageData(this.previousMaskTexture, this.prevDisplayMask);
+      this.uploadImageData(this.maskTexture, this.displayMask);
+      this.stepSimulation(now);
+    }
     this.composite();
   }
 
@@ -461,9 +584,37 @@ export class WaterRenderer {
     );
   }
 
+  private updateDisplayMaskForFrame(now: number): void {
+    if (!this.targetMask || !this.displayMask || !this.prevDisplayMask) return;
+
+    this.prevDisplayMask.data.set(this.displayMask.data);
+
+    const dtSec =
+      this.lastMaskRenderTime > 0
+        ? Math.min(0.25, (now - this.lastMaskRenderTime) / 1000)
+        : 1 / 60;
+    this.lastMaskRenderTime = now;
+
+    const tauMs = this.settings.maskTemporalHalfLifeMs;
+    const k = tauMs <= 0 ? 1 : 1 - Math.exp(-(dtSec * 1000) / tauMs);
+
+    const src = this.targetMask.imageData.data;
+    const dst = this.displayMask.data;
+    for (let i = 0; i < src.length; i += 4) {
+      const a = dst[i] / 255;
+      const b = src[i] / 255;
+      const m = a + (b - a) * k;
+      const v = Math.round(Math.min(1, Math.max(0, m)) * 255);
+      dst[i] = v;
+      dst[i + 1] = v;
+      dst[i + 2] = v;
+      dst[i + 3] = 255;
+    }
+  }
+
   private waterlineTop(): number {
-    const bounds = this.currentMask?.bounds;
-    const height = this.currentMask?.height ?? 1;
+    const bounds = this.targetMask?.bounds;
+    const height = this.targetMask?.height ?? 1;
     if (!bounds) return 1 - this.settings.waterFill;
 
     const personHeight = Math.max(1, bounds.bottom - bounds.top + 1);
@@ -516,11 +667,23 @@ export class WaterRenderer {
       uTime: performance.now(),
       uMaskThreshold: this.settings.maskThreshold,
       uMaskFeather: this.settings.maskFeather,
-      uSurfaceNoise: this.settings.surfaceNoise,
-      uSurfaceChop: this.settings.surfaceChop,
+      uSurfaceNoiseAmp: this.settings.surfaceNoiseAmplitude,
+      uSurfaceNoiseFreq: this.settings.surfaceNoiseFrequency,
+      uSurfaceChopAmp: this.settings.surfaceChopAmplitude,
+      uSurfaceChopFreq: this.settings.surfaceChopFrequency,
       uSurfaceWidth: this.settings.surfaceWidth,
       uWaterBrightness: this.settings.waterBrightness,
       uWaterAlpha: this.settings.waterAlpha,
+      uWaterBase: [
+        this.settings.waterColor.r,
+        this.settings.waterColor.g,
+        this.settings.waterColor.b,
+      ],
+      uWaterGlint: this.settings.waterGlint,
+      uWaterShimmer: this.settings.waterShimmer,
+      uWaterFoam: this.settings.waterFoam,
+      uWaterSaturation: this.settings.waterSaturation,
+      uWaterSurfaceBlend: this.settings.waterSurfaceBlend,
     });
     twgl.drawBufferInfo(gl, this.quad);
   }

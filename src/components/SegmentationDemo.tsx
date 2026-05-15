@@ -11,6 +11,8 @@ import {
   type SegmentationItem,
 } from "@/lib/segmentation/cpuComposite";
 import {
+  assignWaterSettings,
+  cloneWaterSettings,
   DEFAULT_WATER_SETTINGS,
   WaterRenderer,
   type WaterSettings,
@@ -21,15 +23,19 @@ const IS_LOCAL_DEV =
 
 const SEGMENT_INTERVAL_MS = 1000 / 12;
 
+type WaterSettingsSliderKey = Exclude<keyof WaterSettings, "waterColor">;
+
 type SliderConfig = {
-  key: keyof WaterSettings;
+  key: WaterSettingsSliderKey;
   label: string;
   min: number;
   max: number;
   step: number;
 };
 
-const SLIDERS: { title: string; controls: SliderConfig[] }[] = [
+type PaneControl = SliderConfig | { type: "color"; label: string };
+
+const SLIDERS: { title: string; controls: PaneControl[] }[] = [
   {
     title: "Resolution",
     controls: [
@@ -59,6 +65,20 @@ const SLIDERS: { title: string; controls: SliderConfig[] }[] = [
         min: 0.001,
         max: 0.2,
         step: 0.001,
+      },
+      {
+        key: "maskTemporalHalfLifeMs",
+        label: "Mask ease (ms)",
+        min: 0,
+        max: 400,
+        step: 10,
+      },
+      {
+        key: "maskBlurRadius",
+        label: "Blur→threshold (px)",
+        min: 0,
+        max: 16,
+        step: 1,
       },
       {
         key: "waterFill",
@@ -115,18 +135,32 @@ const SLIDERS: { title: string; controls: SliderConfig[] }[] = [
         step: 0.001,
       },
       {
-        key: "surfaceNoise",
-        label: "Surface noise",
+        key: "surfaceNoiseAmplitude",
+        label: "Noise amplitude",
         min: 0,
         max: 0.05,
         step: 0.001,
       },
       {
-        key: "surfaceChop",
-        label: "Surface chop",
+        key: "surfaceNoiseFrequency",
+        label: "Noise frequency",
+        min: 0,
+        max: 6,
+        step: 0.05,
+      },
+      {
+        key: "surfaceChopAmplitude",
+        label: "Chop amplitude",
         min: 0,
         max: 0.18,
         step: 0.002,
+      },
+      {
+        key: "surfaceChopFrequency",
+        label: "Chop frequency",
+        min: 0,
+        max: 12,
+        step: 0.1,
       },
     ],
   },
@@ -141,6 +175,29 @@ const SLIDERS: { title: string; controls: SliderConfig[] }[] = [
         step: 0.02,
       },
       { key: "waterAlpha", label: "Camera mix", min: 0.1, max: 1, step: 0.01 },
+    ],
+  },
+  {
+    title: "Water color",
+    controls: [
+      { type: "color", label: "Body tint" },
+      { key: "waterGlint", label: "Glint", min: 0, max: 2.5, step: 0.05 },
+      { key: "waterShimmer", label: "Shimmer", min: 0, max: 2.5, step: 0.05 },
+      { key: "waterFoam", label: "Foam / splash", min: 0, max: 2.5, step: 0.05 },
+      {
+        key: "waterSaturation",
+        label: "Saturation",
+        min: 0,
+        max: 2,
+        step: 0.02,
+      },
+      {
+        key: "waterSurfaceBlend",
+        label: "Surface softness",
+        min: 0.002,
+        max: 0.08,
+        step: 0.001,
+      },
     ],
   },
 ];
@@ -192,13 +249,13 @@ export function SegmentationDemo() {
   const scratchRef = useRef<CpuCompositeScratch | null>(null);
 
   const [segmenter, setSegmenter] = useState<BodySegmenter | null>(null);
-  const [settings, setSettings] = useState<WaterSettings>(
-    DEFAULT_WATER_SETTINGS,
+  const [settings, setSettings] = useState<WaterSettings>(() =>
+    cloneWaterSettings(DEFAULT_WATER_SETTINGS),
   );
   const settingsRef = useRef(settings);
-  const tweakpaneParamsRef = useRef<WaterSettings>({
-    ...DEFAULT_WATER_SETTINGS,
-  });
+  const tweakpaneParamsRef = useRef<WaterSettings>(
+    cloneWaterSettings(DEFAULT_WATER_SETTINGS),
+  );
   const tweakpanePaneRef = useRef<Pane | null>(null);
   const [status, setStatus] = useState<string>("Starting…");
   const [error, setError] = useState<string | null>(null);
@@ -209,14 +266,14 @@ export function SegmentationDemo() {
 
   useEffect(() => {
     if (!IS_LOCAL_DEV) return;
-    Object.assign(tweakpaneParamsRef.current, settings);
+    assignWaterSettings(tweakpaneParamsRef.current, settings);
     tweakpanePaneRef.current?.refresh();
   }, [settings]);
 
   useEffect(() => {
     if (!IS_LOCAL_DEV) return;
 
-    Object.assign(tweakpaneParamsRef.current, settingsRef.current);
+    assignWaterSettings(tweakpaneParamsRef.current, settingsRef.current);
 
     let cancelled = false;
     void import("tweakpane").then(({ Pane: Tweakpane }) => {
@@ -242,23 +299,32 @@ export function SegmentationDemo() {
           expanded: true,
         });
         for (const c of group.controls) {
-          folder.addBinding(tweakpaneParamsRef.current, c.key, {
-            label: c.label,
-            min: c.min,
-            max: c.max,
-            step: c.step,
-          });
+          if ("type" in c && c.type === "color") {
+            folder.addBinding(tweakpaneParamsRef.current, "waterColor", {
+              label: c.label,
+              view: "color",
+              color: { type: "float" },
+            });
+          } else {
+            const s = c as SliderConfig;
+            folder.addBinding(tweakpaneParamsRef.current, s.key, {
+              label: s.label,
+              min: s.min,
+              max: s.max,
+              step: s.step,
+            });
+          }
         }
       }
 
       pane.addButton({ title: "Reset" }).on("click", () => {
-        Object.assign(tweakpaneParamsRef.current, DEFAULT_WATER_SETTINGS);
+        assignWaterSettings(tweakpaneParamsRef.current, DEFAULT_WATER_SETTINGS);
         pane.refresh();
-        setSettings({ ...DEFAULT_WATER_SETTINGS });
+        setSettings(cloneWaterSettings(DEFAULT_WATER_SETTINGS));
       });
 
       pane.on("change", () => {
-        setSettings({ ...tweakpaneParamsRef.current });
+        setSettings(cloneWaterSettings(tweakpaneParamsRef.current));
       });
     });
 
@@ -407,6 +473,7 @@ export function SegmentationDemo() {
                         video.videoHeight,
                         scratch,
                         activeSettings.maskThreshold,
+                        activeSettings.maskBlurRadius,
                       )
                     : null;
                   if (alive) {
@@ -444,12 +511,12 @@ export function SegmentationDemo() {
   }, [segmenter]);
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-black">
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background">
       <canvas
         ref={canvasRef}
         id="output"
         aria-label="Camera view with body-tracked water simulation"
-        className="h-screen w-screen bg-black object-contain"
+        className="h-screen w-screen bg-transparent object-contain"
       />
 
       <video
