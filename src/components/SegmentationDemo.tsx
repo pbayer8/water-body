@@ -1,7 +1,7 @@
 "use client";
 
 import type { BodySegmenter } from "@tensorflow-models/body-segmentation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Pane } from "tweakpane";
 import {
   type CpuCompositeScratch,
@@ -11,33 +11,54 @@ import {
   type SegmentationItem,
 } from "@/lib/segmentation/cpuComposite";
 import {
-  assignWaterSettings,
-  cloneWaterSettings,
-  DEFAULT_WATER_SETTINGS,
-  WaterRenderer,
-  type WaterSettings,
-} from "@/lib/water/waterRenderer";
+  assignDemoParams,
+  cloneDemoParams,
+  DEFAULT_WATER_DEMO_PARAMS,
+  demoParamsToWaterSettings,
+  mergeDemoParamsWithPreset,
+  type WaterDemoParams,
+} from "@/lib/water/waterDemoParams";
+import { WATER_LOOK_PRESETS } from "@/lib/water/waterPresets";
+import { WaterRenderer } from "@/lib/water/waterRenderer";
 
 const IS_LOCAL_DEV =
   typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-const SEGMENT_INTERVAL_MS = 1000 / 12;
+const SEGMENT_INTERVAL_MS = 40;
 
-type WaterSettingsSliderKey = Exclude<keyof WaterSettings, "waterColor">;
+/** Persisted webcam choice for `/` demo (MediaDevices deviceId). */
+const CAMERA_DEVICE_ID_STORAGE_KEY = "body-water:segmentation-camera-device-id";
 
-type SliderConfig = {
-  key: WaterSettingsSliderKey;
+type PaneFolderScopeKey = keyof WaterDemoParams;
+
+type PaneSliderBinding = {
+  kind?: "slider";
+  key: string;
   label: string;
   min: number;
   max: number;
   step: number;
 };
 
-type PaneControl = SliderConfig | { type: "color"; label: string };
+type PaneColorBinding = {
+  kind: "color";
+  key: string;
+  label: string;
+};
 
-const SLIDERS: { title: string; controls: PaneControl[] }[] = [
+type PaneBinding = PaneSliderBinding | PaneColorBinding;
+
+type PaneFolderDef = {
+  title: string;
+  scopeKey: PaneFolderScopeKey;
+  controls: readonly PaneBinding[];
+};
+
+/** Folder titles + bindings against {@link WaterDemoParams}[scopeKey]. */
+const PARAM_FOLDERS = [
   {
     title: "Resolution",
+    scopeKey: "resolution",
     controls: [
       {
         key: "renderScale",
@@ -51,6 +72,7 @@ const SLIDERS: { title: string; controls: PaneControl[] }[] = [
   },
   {
     title: "Body Mask",
+    scopeKey: "bodyMask",
     controls: [
       {
         key: "maskThreshold",
@@ -91,6 +113,7 @@ const SLIDERS: { title: string; controls: PaneControl[] }[] = [
   },
   {
     title: "Physics",
+    scopeKey: "physics",
     controls: [
       {
         key: "waveSpeed",
@@ -114,11 +137,34 @@ const SLIDERS: { title: string; controls: PaneControl[] }[] = [
         max: 3,
         step: 0.05,
       },
-      { key: "edgeImpulse", label: "Edge impulse", min: 0, max: 2, step: 0.05 },
+      // Edge impulse (simulation uses body impulse only — see waterRenderer SIMULATION_SHADER)
+      // { key: "edgeImpulse", label: "Edge impulse", min: 0, max: 2, step: 0.05 },
+      // {
+      //   key: "edgeRippleSpatialScale",
+      //   label: "Edge ripple scale",
+      //   min: 0.0,
+      //   max: 40,
+      //   step: 0.05,
+      // },
+      // {
+      //   key: "edgeRippleTimeScale",
+      //   label: "Edge ripple speed",
+      //   min: 0,
+      //   max: 5,
+      //   step: 0.05,
+      // },
+      // {
+      //   key: "maskEdgeGain",
+      //   label: "Mask edge gain",
+      //   min: 0,
+      //   max: 12,
+      //   step: 0.1,
+      // },
     ],
   },
   {
     title: "Surface",
+    scopeKey: "surface",
     controls: [
       {
         key: "surfaceSplash",
@@ -166,6 +212,7 @@ const SLIDERS: { title: string; controls: PaneControl[] }[] = [
   },
   {
     title: "Water",
+    scopeKey: "water",
     controls: [
       {
         key: "waterBrightness",
@@ -175,15 +222,134 @@ const SLIDERS: { title: string; controls: PaneControl[] }[] = [
         step: 0.02,
       },
       { key: "waterAlpha", label: "Camera mix", min: 0.1, max: 1, step: 0.01 },
+      {
+        key: "waterRefraction",
+        label: "Refraction",
+        min: 0,
+        max: 0.1,
+        step: 0.002,
+      },
     ],
   },
   {
-    title: "Water color",
+    title: "Glint (Fresnel tint)",
+    scopeKey: "glint",
     controls: [
-      { type: "color", label: "Body tint" },
-      { key: "waterGlint", label: "Glint", min: 0, max: 2.5, step: 0.05 },
-      { key: "waterShimmer", label: "Shimmer", min: 0, max: 2.5, step: 0.05 },
-      { key: "waterFoam", label: "Foam / splash", min: 0, max: 2.5, step: 0.05 },
+      { kind: "color", key: "waterGlintColor", label: "Glint tint" },
+      {
+        key: "waterGlint",
+        label: "Glint amount",
+        min: 0,
+        max: 2.5,
+        step: 0.05,
+      },
+      {
+        key: "waterGlintNormalMin",
+        label: "Glint grad start",
+        min: 0,
+        max: 1,
+        step: 0.01,
+      },
+      {
+        key: "waterGlintNormalMax",
+        label: "Glint grad end",
+        min: 0,
+        max: 1,
+        step: 0.01,
+      },
+    ],
+  },
+  {
+    title: "Specular highlight",
+    scopeKey: "specular",
+    controls: [
+      { kind: "color", key: "waterSpecularColor", label: "Specular tint" },
+      {
+        key: "waterSpecular",
+        label: "Specular amount",
+        min: 0,
+        max: 2.5,
+        step: 0.05,
+      },
+      {
+        key: "waterSpecularShininess",
+        label: "Sharpness (exponent)",
+        min: 4,
+        max: 200,
+        step: 1,
+      },
+      {
+        key: "waterSpecularSheenWeight",
+        label: "Sheen weight",
+        min: 0,
+        max: 2,
+        step: 0.02,
+      },
+      {
+        key: "waterSpecularSheenPower",
+        label: "Sheen spread",
+        min: 2,
+        max: 64,
+        step: 0.5,
+      },
+      {
+        key: "waterSpecularCouplingFlat",
+        label: "Spec × glint base",
+        min: 0,
+        max: 2.5,
+        step: 0.02,
+      },
+      {
+        key: "waterSpecularCouplingGlint",
+        label: "Spec × glint boost",
+        min: 0,
+        max: 2.5,
+        step: 0.02,
+      },
+      {
+        key: "waterSpecularLightX",
+        label: "Light dir X",
+        min: -3,
+        max: 3,
+        step: 0.02,
+      },
+      {
+        key: "waterSpecularLightY",
+        label: "Light dir Y",
+        min: -3,
+        max: 3,
+        step: 0.02,
+      },
+      {
+        key: "waterSpecularLightZ",
+        label: "Light dir Z",
+        min: -3,
+        max: 3,
+        step: 0.02,
+      },
+      {
+        key: "waterSpecularNormalScale",
+        label: "Highlight normal scale",
+        min: 0.25,
+        max: 12,
+        step: 0.05,
+      },
+    ],
+  },
+  {
+    title: "Tint & finish",
+    scopeKey: "tintFinish",
+    controls: [
+      { kind: "color", key: "waterColor", label: "Body tint" },
+      {
+        key: "waterFoam",
+        label: "Foam / splash",
+        min: 0,
+        max: 2.5,
+        step: 0.05,
+      },
+      { kind: "color", key: "waterFoamColorA", label: "Foam (waterline)" },
+      { kind: "color", key: "waterFoamColorB", label: "Foam (splash)" },
       {
         key: "waterSaturation",
         label: "Saturation",
@@ -200,7 +366,7 @@ const SLIDERS: { title: string; controls: PaneControl[] }[] = [
       },
     ],
   },
-];
+] satisfies readonly PaneFolderDef[];
 
 function hasRenderableVideoFrame(video: HTMLVideoElement): boolean {
   const width = Math.trunc(video.videoWidth);
@@ -249,31 +415,38 @@ export function SegmentationDemo() {
   const scratchRef = useRef<CpuCompositeScratch | null>(null);
 
   const [segmenter, setSegmenter] = useState<BodySegmenter | null>(null);
-  const [settings, setSettings] = useState<WaterSettings>(() =>
-    cloneWaterSettings(DEFAULT_WATER_SETTINGS),
+  const [demoParams, setDemoParams] = useState<WaterDemoParams>(() =>
+    cloneDemoParams(DEFAULT_WATER_DEMO_PARAMS),
   );
-  const settingsRef = useRef(settings);
-  const tweakpaneParamsRef = useRef<WaterSettings>(
-    cloneWaterSettings(DEFAULT_WATER_SETTINGS),
+  const demoParamsRef = useRef(demoParams);
+  const rendererSettingsRef = useRef(
+    demoParamsToWaterSettings(DEFAULT_WATER_DEMO_PARAMS),
+  );
+  const tweakpaneParamsRef = useRef<WaterDemoParams>(
+    cloneDemoParams(DEFAULT_WATER_DEMO_PARAMS),
   );
   const tweakpanePaneRef = useRef<Pane | null>(null);
   const [status, setStatus] = useState<string>("Starting…");
   const [error, setError] = useState<string | null>(null);
+  const [activeLookPresetId, setActiveLookPresetId] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
+    demoParamsRef.current = demoParams;
+    rendererSettingsRef.current = demoParamsToWaterSettings(demoParams);
+  }, [demoParams]);
 
   useEffect(() => {
     if (!IS_LOCAL_DEV) return;
-    assignWaterSettings(tweakpaneParamsRef.current, settings);
+    assignDemoParams(tweakpaneParamsRef.current, demoParams);
     tweakpanePaneRef.current?.refresh();
-  }, [settings]);
+  }, [demoParams]);
 
   useEffect(() => {
     if (!IS_LOCAL_DEV) return;
 
-    assignWaterSettings(tweakpaneParamsRef.current, settingsRef.current);
+    assignDemoParams(tweakpaneParamsRef.current, demoParamsRef.current);
 
     let cancelled = false;
     void import("tweakpane").then(({ Pane: Tweakpane }) => {
@@ -293,38 +466,43 @@ export function SegmentationDemo() {
       paneEl.style.overflowY = "auto";
       paneEl.style.zIndex = "40";
 
-      for (const group of SLIDERS) {
+      for (const group of PARAM_FOLDERS) {
         const folder = pane.addFolder({
           title: group.title,
           expanded: true,
         });
+        const scope = tweakpaneParamsRef.current[group.scopeKey] as Record<
+          string,
+          unknown
+        >;
         for (const c of group.controls) {
-          if ("type" in c && c.type === "color") {
-            folder.addBinding(tweakpaneParamsRef.current, "waterColor", {
+          if ("kind" in c && c.kind === "color") {
+            folder.addBinding(scope, c.key, {
               label: c.label,
               view: "color",
               color: { type: "float" },
             });
           } else {
-            const s = c as SliderConfig;
-            folder.addBinding(tweakpaneParamsRef.current, s.key, {
-              label: s.label,
-              min: s.min,
-              max: s.max,
-              step: s.step,
+            folder.addBinding(scope, c.key, {
+              label: c.label,
+              min: c.min,
+              max: c.max,
+              step: c.step,
             });
           }
         }
       }
 
       pane.addButton({ title: "Reset" }).on("click", () => {
-        assignWaterSettings(tweakpaneParamsRef.current, DEFAULT_WATER_SETTINGS);
+        setActiveLookPresetId(null);
+        assignDemoParams(tweakpaneParamsRef.current, DEFAULT_WATER_DEMO_PARAMS);
         pane.refresh();
-        setSettings(cloneWaterSettings(DEFAULT_WATER_SETTINGS));
+        setDemoParams(cloneDemoParams(DEFAULT_WATER_DEMO_PARAMS));
       });
 
       pane.on("change", () => {
-        setSettings(cloneWaterSettings(tweakpaneParamsRef.current));
+        setActiveLookPresetId(null);
+        setDemoParams(cloneDemoParams(tweakpaneParamsRef.current));
       });
     });
 
@@ -339,7 +517,68 @@ export function SegmentationDemo() {
     scratchRef.current = initCpuCompositeScratch();
   }, []);
 
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [cameraPrefsHydrated, setCameraPrefsHydrated] = useState(false);
+
   useEffect(() => {
+    try {
+      const stored = localStorage.getItem(CAMERA_DEVICE_ID_STORAGE_KEY);
+      if (stored) setSelectedDeviceId(stored);
+    } catch {
+      // ignore private mode / blocked storage
+    }
+    setCameraPrefsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!cameraPrefsHydrated) return;
+    try {
+      if (selectedDeviceId) {
+        localStorage.setItem(CAMERA_DEVICE_ID_STORAGE_KEY, selectedDeviceId);
+      } else {
+        localStorage.removeItem(CAMERA_DEVICE_ID_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }, [cameraPrefsHydrated, selectedDeviceId]);
+
+  const refreshCameraList = useCallback(async () => {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.enumerateDevices
+    ) {
+      return;
+    }
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      setCameraDevices(all.filter((d) => d.kind === "videoinput"));
+    } catch {
+      // Non-fatal: picker stays empty until a later refresh.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.addEventListener
+    ) {
+      return;
+    }
+
+    navigator.mediaDevices.addEventListener("devicechange", refreshCameraList);
+    return () => {
+      navigator.mediaDevices.removeEventListener(
+        "devicechange",
+        refreshCameraList,
+      );
+    };
+  }, [refreshCameraList]);
+
+  useEffect(() => {
+    if (!cameraPrefsHydrated) return;
+
     let cancelled = false;
     let stream: MediaStream | null = null;
 
@@ -347,7 +586,9 @@ export function SegmentationDemo() {
       setError(null);
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" },
+          video: selectedDeviceId
+            ? { deviceId: { exact: selectedDeviceId } }
+            : { facingMode: "user" },
           audio: false,
         });
         const video = videoRef.current;
@@ -357,6 +598,11 @@ export function SegmentationDemo() {
           }
           return;
         }
+        const trackSettings = stream.getVideoTracks()[0]?.getSettings();
+        if (trackSettings?.deviceId && selectedDeviceId == null && !cancelled) {
+          setSelectedDeviceId(trackSettings.deviceId);
+        }
+        void refreshCameraList();
         video.srcObject = stream;
         await video.play();
         if (!cancelled)
@@ -378,7 +624,7 @@ export function SegmentationDemo() {
         t.stop();
       }
     };
-  }, []);
+  }, [cameraPrefsHydrated, refreshCameraList, selectedDeviceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -465,7 +711,7 @@ export function SegmentationDemo() {
                 try {
                   if (!alive) return;
 
-                  const activeSettings = settingsRef.current;
+                  const activeSettings = rendererSettingsRef.current;
                   latestMask = people.length
                     ? await createMaskFrameFromSegmentations(
                         people,
@@ -492,7 +738,7 @@ export function SegmentationDemo() {
               });
           }
 
-          renderer.setSettings(settingsRef.current);
+          renderer.setSettings(rendererSettingsRef.current);
           renderer.render(video, now);
         }
       } catch (e) {
@@ -509,6 +755,10 @@ export function SegmentationDemo() {
       renderer.dispose();
     };
   }, [segmenter]);
+
+  const orphanedSelection =
+    selectedDeviceId !== null &&
+    cameraDevices.every((d) => d.deviceId !== selectedDeviceId);
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background">
@@ -533,10 +783,93 @@ export function SegmentationDemo() {
       </p>
 
       {error ? (
-        <div className="absolute inset-x-6 top-6 rounded-2xl border border-red-500/40 bg-black/80 px-4 py-3 text-sm text-red-100">
+        <div className="absolute inset-x-6 top-24 z-[45] rounded-2xl border border-red-500/40 bg-black/80 px-4 py-3 text-sm text-red-100">
           {error}
         </div>
       ) : null}
+
+      <div className="pointer-events-none fixed inset-x-0 top-4 z-[50] px-3">
+        <div className="mx-auto grid w-full max-w-[100vw] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-2">
+          <div className="pointer-events-auto min-w-0 justify-self-start">
+            <label htmlFor="camera-device" className="sr-only">
+              Camera
+            </label>
+            <select
+              id="camera-device"
+              aria-label="Choose camera"
+              className="max-w-[min(15rem,38vw)] w-full min-w-0 cursor-pointer appearance-none rounded-full border border-white/20 bg-black/35 py-1.5 pl-3.5 pr-7 text-xs font-medium text-white/90 shadow-sm backdrop-blur-md outline-none transition hover:border-white/40 hover:bg-black/45 focus-visible:ring-2 focus-visible:ring-white/35 disabled:cursor-not-allowed disabled:opacity-60 sm:max-w-[16rem]"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.75)' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`,
+                backgroundRepeat: "no-repeat",
+                backgroundPosition: "right 0.5rem center",
+                backgroundSize: "0.75rem",
+              }}
+              disabled={cameraDevices.length === 0}
+              value={
+                cameraDevices.length === 0
+                  ? ""
+                  : orphanedSelection && selectedDeviceId
+                    ? selectedDeviceId
+                    : (selectedDeviceId ?? "")
+              }
+              onChange={(event) =>
+                setSelectedDeviceId(event.target.value || null)
+              }
+            >
+              {cameraDevices.length === 0 ? (
+                <option value="">Detecting cameras…</option>
+              ) : (
+                <>
+                  {orphanedSelection ? (
+                    <option value={selectedDeviceId}>Current camera</option>
+                  ) : null}
+                  {cameraDevices.map((device, index) => {
+                    const fallback = `Camera ${index + 1}`;
+                    const label =
+                      device.label && device.label.trim().length > 0
+                        ? device.label.trim()
+                        : fallback;
+                    return (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {label}
+                      </option>
+                    );
+                  })}
+                </>
+              )}
+            </select>
+          </div>
+
+          <div
+            role="toolbar"
+            aria-label="Water look presets"
+            className="pointer-events-none col-start-2 row-start-1 flex max-w-[min(100vw-10rem,56rem)] flex-wrap justify-center gap-2 justify-self-center"
+          >
+            {WATER_LOOK_PRESETS.map((preset) => {
+              const selected = preset.id === activeLookPresetId;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={
+                    selected
+                      ? "pointer-events-auto rounded-full border border-white/55 bg-white/25 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm backdrop-blur-md transition hover:bg-white/35"
+                      : "pointer-events-auto rounded-full border border-white/20 bg-black/35 px-3.5 py-1.5 text-xs font-medium text-white/90 shadow-sm backdrop-blur-md transition hover:border-white/40 hover:bg-black/45"
+                  }
+                  onClick={() => {
+                    setActiveLookPresetId(preset.id);
+                    setDemoParams((prev) =>
+                      mergeDemoParamsWithPreset(prev, preset.patch),
+                    );
+                  }}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </main>
   );
 }

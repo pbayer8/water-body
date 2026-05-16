@@ -20,7 +20,15 @@ export type WaterSettings = {
   damping: number;
   restoringForce: number;
   motionImpulse: number;
+  // Edge-impulse knobs: simulation path is commented out in SIMULATION_SHADER (body impulse only).
+  // Kept on the type/defaults so flatten-from-demo-params stays stable when physics sliders return.
   edgeImpulse: number;
+  /** Spatial scale of the pseudo-random ripple pattern modulating edge impulse. */
+  edgeRippleSpatialScale: number;
+  /** Time scale for how fast that edge ripple pattern moves. */
+  edgeRippleTimeScale: number;
+  /** Gain on silhouette mask gradient driving edge ripples (was fixed ×2.5). */
+  maskEdgeGain: number;
   surfaceSplash: number;
   surfaceWidth: number;
   surfaceNoiseAmplitude: number;
@@ -31,16 +39,46 @@ export type WaterSettings = {
   waterAlpha: number;
   /** Body tint (linear 0–1 channels; Tweakpane color). */
   waterColor: { r: number; g: number; b: number };
-  /** Fresnel / normal-highlight strength. */
+  /** Broad Fresnel-style tint from wave slope (amount). */
   waterGlint: number;
-  /** Fine moving highlights on the surface. */
-  waterShimmer: number;
+  /** Tint multiplied by glint (linear 0–1). */
+  waterGlintColor: { r: number; g: number; b: number };
+  /** smoothstep low edge on gradient magnitude for glint. */
+  waterGlintNormalMin: number;
+  /** smoothstep high edge on gradient magnitude for glint. */
+  waterGlintNormalMax: number;
+  /** Sharp sun/sky highlight lobe strength (separate from glint). */
+  waterSpecular: number;
+  /** Specular highlight tint (linear 0–1). */
+  waterSpecularColor: { r: number; g: number; b: number };
+  /** Primary specular exponent (Blinn-Phong-style shininess). */
+  waterSpecularShininess: number;
+  /** Weight of the broader sheen lobe added to the sharp specular. */
+  waterSpecularSheenWeight: number;
+  /** Exponent for the broader sheen lobe. */
+  waterSpecularSheenPower: number;
+  /** Specular strength when glint=0 (base coupling). */
+  waterSpecularCouplingFlat: number;
+  /** Extra specular scale multiplied by glint (0–1). */
+  waterSpecularCouplingGlint: number;
+  /** Light direction X (normalized in shader). */
+  waterSpecularLightX: number;
+  waterSpecularLightY: number;
+  waterSpecularLightZ: number;
+  /** Scales XY of simulation gradient when building shading normal (micro-relief). */
+  waterSpecularNormalScale: number;
   /** Bright foam / splash streak along the waterline. */
   waterFoam: number;
+  /** Foam color near the waterline (linear 0–1). */
+  waterFoamColorA: { r: number; g: number; b: number };
+  /** Foam / splash secondary tint (linear 0–1). */
+  waterFoamColorB: { r: number; g: number; b: number };
   /** 0 = grayscale water, 1 = default, >1 exaggerates chroma. */
   waterSaturation: number;
-  /** Width of the air–water blend (matches legacy ~0.016). */
+  /** Width of the air–water blend along the silhouette. */
   waterSurfaceBlend: number;
+  /** UV displacement strength for underwater camera refraction (wave normal). */
+  waterRefraction: number;
   /**
    * Time constant (ms) for the displayed mask to ease toward each new segmentation.
    * 0 = no temporal smoothing (mask snaps every segmentation tick).
@@ -55,52 +93,95 @@ export type WaterSettings = {
 
 export const DEFAULT_WATER_SETTINGS: WaterSettings = {
   waterFill: 0.5,
-  maskThreshold: 0.95,
-  maskFeather: 0.001,
+  maskThreshold: 0.47,
+  maskFeather: 0.101,
   renderScale: 1,
-  simSize: 320,
-  waveSpeed: 0.2,
+  simSize: 576,
+  waveSpeed: 0.28,
   damping: 0.98,
   restoringForce: 0.04,
   motionImpulse: 2,
+  // Defaults for edge-impulse uniforms (unused while SIMULATION_SHADER edge path is off).
   edgeImpulse: 1.01,
-  surfaceSplash: 1.05,
-  surfaceWidth: 0.02,
-  surfaceNoiseAmplitude: 0.01,
-  surfaceNoiseFrequency: 1,
-  surfaceChopAmplitude: 0.015,
-  surfaceChopFrequency: 0,
-  waterBrightness: 1.6,
-  waterAlpha: 0.7,
-  waterColor: { r: 0.02, g: 0.18, b: 0.72 },
-  waterGlint: 1,
-  waterShimmer: 1,
-  waterFoam: 1,
-  waterSaturation: 1,
-  waterSurfaceBlend: 0.016,
-  maskTemporalHalfLifeMs: 90,
-  maskBlurRadius: 0,
+  edgeRippleSpatialScale: 1,
+  edgeRippleTimeScale: 1,
+  maskEdgeGain: 2.5,
+  surfaceSplash: 0,
+  surfaceWidth: 0.041,
+  surfaceNoiseAmplitude: 0.009,
+  surfaceNoiseFrequency: 0.85,
+  surfaceChopAmplitude: 0.005,
+  surfaceChopFrequency: 0.1,
+  waterBrightness: 2,
+  waterAlpha: 0.67,
+  waterColor: { r: 0.02, g: 0.18, b: 0.8 },
+  waterGlint: 2.5,
+  waterGlintColor: { r: 0.02, g: 0.07, b: 0.18 },
+  waterGlintNormalMin: 0.08,
+  waterGlintNormalMax: 0.28,
+  waterSpecular: 2.5,
+  waterSpecularColor: { r: 0.92, g: 0.96, b: 1.0 },
+  waterSpecularShininess: 88,
+  waterSpecularSheenWeight: 0.2,
+  waterSpecularSheenPower: 14,
+  waterSpecularCouplingFlat: 0.65,
+  waterSpecularCouplingGlint: 0.35,
+  waterSpecularLightX: 0.34,
+  waterSpecularLightY: 0.4,
+  waterSpecularLightZ: 0.85,
+  waterSpecularNormalScale: 3.2,
+  waterFoam: 2.5,
+  waterFoamColorA: { r: 0.05, g: 0.12, b: 0.24 },
+  waterFoamColorB: { r: 0.08, g: 0.18, b: 0.32 },
+  waterSaturation: 1.24,
+  waterSurfaceBlend: 0.002,
+  waterRefraction: 0.028,
+  /** 0 = mask snaps to each segmentation (stronger body motion impulse). */
+  maskTemporalHalfLifeMs: 0,
+  maskBlurRadius: 10,
 };
 
 /** Clone for React state / immutable snapshots (nested `waterColor` is copied). */
 export function cloneWaterSettings(settings: WaterSettings): WaterSettings {
-  return { ...settings, waterColor: { ...settings.waterColor } };
+  return {
+    ...settings,
+    waterColor: { ...settings.waterColor },
+    waterGlintColor: { ...settings.waterGlintColor },
+    waterSpecularColor: { ...settings.waterSpecularColor },
+    waterFoamColorA: { ...settings.waterFoamColorA },
+    waterFoamColorB: { ...settings.waterFoamColorB },
+  };
 }
 
 /**
  * Copy into an existing settings object (e.g. Tweakpane's bound params) without
- * replacing the `waterColor` object identity.
+ * replacing nested object identities for colors.
  */
 export function assignWaterSettings(
   target: WaterSettings,
   source: WaterSettings,
 ): void {
-  const { waterColor, ...rest } = source;
+  const {
+    waterColor,
+    waterGlintColor,
+    waterSpecularColor,
+    waterFoamColorA,
+    waterFoamColorB,
+    ...rest
+  } = source;
   Object.assign(target, rest);
   Object.assign(target.waterColor, waterColor);
+  Object.assign(target.waterGlintColor, waterGlintColor);
+  Object.assign(target.waterSpecularColor, waterSpecularColor);
+  Object.assign(target.waterFoamColorA, waterFoamColorA);
+  Object.assign(target.waterFoamColorB, waterFoamColorB);
 }
 
 function clampSettings(settings: WaterSettings): WaterSettings {
+  const glintNMin = Math.min(1.25, Math.max(0, settings.waterGlintNormalMin));
+  let glintNMax = Math.min(1.25, Math.max(0, settings.waterGlintNormalMax));
+  if (glintNMax <= glintNMin) glintNMax = glintNMin + 0.005;
+
   return {
     waterFill: Math.min(0.95, Math.max(0.05, settings.waterFill)),
     maskThreshold: Math.min(0.95, Math.max(0.05, settings.maskThreshold)),
@@ -111,13 +192,32 @@ function clampSettings(settings: WaterSettings): WaterSettings {
     damping: Math.min(0.999, Math.max(0.9, settings.damping)),
     restoringForce: Math.min(0.08, Math.max(0, settings.restoringForce)),
     motionImpulse: Math.min(3, Math.max(0, settings.motionImpulse)),
+    // Edge-impulse clamps (values unused by sim while edge path is commented out).
     edgeImpulse: Math.min(2, Math.max(0, settings.edgeImpulse)),
+    edgeRippleSpatialScale: Math.min(
+      4,
+      Math.max(0.05, settings.edgeRippleSpatialScale),
+    ),
+    edgeRippleTimeScale: Math.min(5, Math.max(0, settings.edgeRippleTimeScale)),
+    maskEdgeGain: Math.min(12, Math.max(0, settings.maskEdgeGain)),
     surfaceSplash: Math.min(4, Math.max(0, settings.surfaceSplash)),
     surfaceWidth: Math.min(0.1, Math.max(0.002, settings.surfaceWidth)),
-    surfaceNoiseAmplitude: Math.min(0.05, Math.max(0, settings.surfaceNoiseAmplitude)),
-    surfaceNoiseFrequency: Math.min(6, Math.max(0, settings.surfaceNoiseFrequency)),
-    surfaceChopAmplitude: Math.min(0.18, Math.max(0, settings.surfaceChopAmplitude)),
-    surfaceChopFrequency: Math.min(12, Math.max(0, settings.surfaceChopFrequency)),
+    surfaceNoiseAmplitude: Math.min(
+      0.05,
+      Math.max(0, settings.surfaceNoiseAmplitude),
+    ),
+    surfaceNoiseFrequency: Math.min(
+      6,
+      Math.max(0, settings.surfaceNoiseFrequency),
+    ),
+    surfaceChopAmplitude: Math.min(
+      0.18,
+      Math.max(0, settings.surfaceChopAmplitude),
+    ),
+    surfaceChopFrequency: Math.min(
+      12,
+      Math.max(0, settings.surfaceChopFrequency),
+    ),
     waterBrightness: Math.min(2, Math.max(0.2, settings.waterBrightness)),
     waterAlpha: Math.min(1, Math.max(0.1, settings.waterAlpha)),
     waterColor: {
@@ -126,12 +226,80 @@ function clampSettings(settings: WaterSettings): WaterSettings {
       b: Math.min(1, Math.max(0, settings.waterColor.b)),
     },
     waterGlint: Math.min(2.5, Math.max(0, settings.waterGlint)),
-    waterShimmer: Math.min(2.5, Math.max(0, settings.waterShimmer)),
+    waterGlintColor: {
+      r: Math.min(1, Math.max(0, settings.waterGlintColor.r)),
+      g: Math.min(1, Math.max(0, settings.waterGlintColor.g)),
+      b: Math.min(1, Math.max(0, settings.waterGlintColor.b)),
+    },
+    waterGlintNormalMin: glintNMin,
+    waterGlintNormalMax: glintNMax,
+    waterSpecular: Math.min(2.5, Math.max(0, settings.waterSpecular)),
+    waterSpecularColor: {
+      r: Math.min(1, Math.max(0, settings.waterSpecularColor.r)),
+      g: Math.min(1, Math.max(0, settings.waterSpecularColor.g)),
+      b: Math.min(1, Math.max(0, settings.waterSpecularColor.b)),
+    },
+    waterSpecularShininess: Math.min(
+      200,
+      Math.max(4, settings.waterSpecularShininess),
+    ),
+    waterSpecularSheenWeight: Math.min(
+      2,
+      Math.max(0, settings.waterSpecularSheenWeight),
+    ),
+    waterSpecularSheenPower: Math.min(
+      64,
+      Math.max(2, settings.waterSpecularSheenPower),
+    ),
+    waterSpecularCouplingFlat: Math.min(
+      2.5,
+      Math.max(0, settings.waterSpecularCouplingFlat),
+    ),
+    waterSpecularCouplingGlint: Math.min(
+      2.5,
+      Math.max(0, settings.waterSpecularCouplingGlint),
+    ),
+    waterSpecularLightX: Math.min(
+      3,
+      Math.max(-3, settings.waterSpecularLightX),
+    ),
+    waterSpecularLightY: Math.min(
+      3,
+      Math.max(-3, settings.waterSpecularLightY),
+    ),
+    waterSpecularLightZ: Math.min(
+      3,
+      Math.max(-3, settings.waterSpecularLightZ),
+    ),
+    waterSpecularNormalScale: Math.min(
+      12,
+      Math.max(0.25, settings.waterSpecularNormalScale),
+    ),
     waterFoam: Math.min(2.5, Math.max(0, settings.waterFoam)),
+    waterFoamColorA: {
+      r: Math.min(1, Math.max(0, settings.waterFoamColorA.r)),
+      g: Math.min(1, Math.max(0, settings.waterFoamColorA.g)),
+      b: Math.min(1, Math.max(0, settings.waterFoamColorA.b)),
+    },
+    waterFoamColorB: {
+      r: Math.min(1, Math.max(0, settings.waterFoamColorB.r)),
+      g: Math.min(1, Math.max(0, settings.waterFoamColorB.g)),
+      b: Math.min(1, Math.max(0, settings.waterFoamColorB.b)),
+    },
     waterSaturation: Math.min(2, Math.max(0, settings.waterSaturation)),
-    waterSurfaceBlend: Math.min(0.08, Math.max(0.002, settings.waterSurfaceBlend)),
-    maskTemporalHalfLifeMs: Math.min(800, Math.max(0, settings.maskTemporalHalfLifeMs)),
-    maskBlurRadius: Math.min(24, Math.max(0, Math.round(settings.maskBlurRadius))),
+    waterSurfaceBlend: Math.min(
+      0.08,
+      Math.max(0.002, settings.waterSurfaceBlend),
+    ),
+    waterRefraction: Math.min(0.1, Math.max(0, settings.waterRefraction)),
+    maskTemporalHalfLifeMs: Math.min(
+      800,
+      Math.max(0, settings.maskTemporalHalfLifeMs),
+    ),
+    maskBlurRadius: Math.min(
+      24,
+      Math.max(0, Math.round(settings.maskBlurRadius)),
+    ),
   };
 }
 
@@ -162,12 +330,16 @@ uniform float uWaveSpeed;
 uniform float uDamping;
 uniform float uRestoringForce;
 uniform float uMotionImpulse;
-uniform float uEdgeImpulse;
+// Edge impulse uniforms (unused while edge impulse is disabled below)
+// uniform float uEdgeImpulse;
+// uniform float uEdgeRippleSpatial;
+// uniform float uEdgeRippleTime;
+// uniform float uMaskEdgeGain;
 uniform float uSurfaceSplash;
 uniform float uSurfaceWidth;
 
 float personMask(sampler2D tex, vec2 uv) {
-  vec2 imageUv = vec2(uv.x, 1.0 - uv.y);
+  vec2 imageUv = vec2(1.0 - uv.x, 1.0 - uv.y);
   return texture(tex, imageUv).r;
 }
 
@@ -182,23 +354,30 @@ void main() {
   float up = texture(uState, vUv + vec2(0.0, uTexel.y)).r;
   float laplacian = left + right + down + up - 4.0 * h;
 
-  vec2 imageUv = vec2(vUv.x, 1.0 - vUv.y);
+  vec2 imageUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
   float mask = texture(uMask, imageUv).r;
   float prevMask = texture(uPrevMask, imageUv).r;
   float inPerson = step(uMaskThreshold, mask);
   float inWater = inPerson * step(uWaterlineTop, imageUv.y);
   float surfaceBand = exp(-pow((imageUv.y - uWaterlineTop) / uSurfaceWidth, 2.0)) * inPerson;
 
-  float maskLeft = personMask(uMask, vUv - vec2(uTexel.x, 0.0));
-  float maskRight = personMask(uMask, vUv + vec2(uTexel.x, 0.0));
-  float maskDown = personMask(uMask, vUv - vec2(0.0, uTexel.y));
-  float maskUp = personMask(uMask, vUv + vec2(0.0, uTexel.y));
-  float edge = min(1.0, length(vec2(maskRight - maskLeft, maskUp - maskDown)) * 2.5);
+  // --- Edge impulse: mask-gradient + ripple modulation (disabled; body impulse only) ---
+  // float maskLeft = personMask(uMask, vUv - vec2(uTexel.x, 0.0));
+  // float maskRight = personMask(uMask, vUv + vec2(uTexel.x, 0.0));
+  // float maskDown = personMask(uMask, vUv - vec2(0.0, uTexel.y));
+  // float maskUp = personMask(uMask, vUv + vec2(0.0, uTexel.y));
+  // float edge = min(1.0, length(vec2(maskRight - maskLeft, maskUp - maskDown)) * uMaskEdgeGain);
   float motion = abs(mask - prevMask);
-  float rippleSeed = sin((vUv.x * 71.0 + vUv.y * 113.0 + uTime * 0.001) * 6.28318) * 0.5 + 0.5;
+  // float rippleSeed = sin((
+  //   vUv.x * 71.0 * uEdgeRippleSpatial +
+  //   vUv.y * 113.0 * uEdgeRippleSpatial +
+  //   uTime * 0.001 * uEdgeRippleTime
+  // ) * 6.28318) * 0.5 + 0.5;
   float slosh = sin((vUv.x * 18.0 + uTime * 0.006) + h * 5.0) * 0.04 * surfaceBand;
-  float surfaceKick = surfaceBand * (0.45 + edge * 0.55) * (motion * 1.4 + 0.18 * rippleSeed + slosh);
-  float disturbance = (motion * uMotionImpulse + edge * uEdgeImpulse * rippleSeed) * uImpulse * inWater;
+  // Was: surfaceBand * (0.45 + edge * 0.55) * (motion * 1.4 + 0.18 * rippleSeed + slosh);
+  float surfaceKick = surfaceBand * 0.45 * (motion * 1.4 + slosh);
+  // Was: (motion * uMotionImpulse + edge * uEdgeImpulse * rippleSeed) * uImpulse * inWater;
+  float disturbance = motion * uMotionImpulse * uImpulse * inWater;
   disturbance += surfaceKick * uImpulse * uSurfaceSplash;
 
   velocity += laplacian * uWaveSpeed;
@@ -237,23 +416,52 @@ uniform float uWaterBrightness;
 uniform float uWaterAlpha;
 uniform vec3 uWaterBase;
 uniform float uWaterGlint;
-uniform float uWaterShimmer;
+uniform vec3 uWaterGlintTint;
+uniform float uWaterGlintEdge0;
+uniform float uWaterGlintEdge1;
+uniform float uWaterSpecular;
+uniform vec3 uWaterSpecularTint;
+uniform float uWaterSpecularShininess;
+uniform float uWaterSpecularSheenWeight;
+uniform float uWaterSpecularSheenPower;
+uniform float uWaterSpecularCouplingFlat;
+uniform float uWaterSpecularCouplingGlint;
+uniform vec3 uWaterSpecularLight;
+uniform float uWaterSpecularNormalScale;
 uniform float uWaterFoam;
+uniform vec3 uWaterFoamA;
+uniform vec3 uWaterFoamB;
 uniform float uWaterSaturation;
 uniform float uWaterSurfaceBlend;
+uniform float uWaterRefraction;
 
 vec4 cameraColor(vec2 uv) {
-  vec2 imageUv = vec2(uv.x, 1.0 - uv.y);
+  vec2 imageUv = vec2(1.0 - uv.x, 1.0 - uv.y);
   return texture(uVideo, imageUv);
 }
 
+vec3 cameraColorRefracted(
+  vec2 uv,
+  vec2 normalXY,
+  float personEdge,
+  float surfaceDistance
+) {
+  float below = smoothstep(-0.004, 0.03, surfaceDistance);
+  float depth = clamp(surfaceDistance * 4.5, 0.0, 1.0);
+  float edge = mix(0.3, 1.0, smoothstep(0.15, 0.92, personEdge));
+  float mag =
+    uWaterRefraction * below * (0.22 + 0.78 * depth) * edge;
+  vec2 off = vec2(-normalXY.x, -normalXY.y) * mag;
+  return cameraColor(uv + off).rgb;
+}
+
 float maskValue(vec2 uv) {
-  vec2 imageUv = vec2(uv.x, 1.0 - uv.y);
+  vec2 imageUv = vec2(1.0 - uv.x, 1.0 - uv.y);
   return texture(uMask, imageUv).r;
 }
 
 void main() {
-  vec2 imageUv = vec2(vUv.x, 1.0 - vUv.y);
+  vec2 imageUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
   float mask = texture(uMask, imageUv).r;
   // Feather only the outer (background) side of the threshold so wide bands do not
   // pull interior mask values into a mid-alpha ramp (which dims the whole silhouette).
@@ -286,29 +494,38 @@ void main() {
   float hR = texture(uState, vUv + vec2(uTexel.x, 0.0)).r;
   float hD = texture(uState, vUv - vec2(0.0, uTexel.y)).r;
   float hU = texture(uState, vUv + vec2(0.0, uTexel.y)).r;
-  vec2 normal = vec2(hL - hR, hD - hU);
+  vec2 normal = vec2(hR - hL, hD - hU);
 
-  float glint = smoothstep(0.08, 0.28, length(normal));
-  float wave = 0.5 + 0.5 * sin((vUv.y + h * 0.2) * 70.0 + h * 18.0);
-  vec3 glintTint = vec3(0.02, 0.07, 0.18);
-  vec3 waveTint = vec3(0.015);
-  vec3 color =
-    (uWaterBase + glintTint * glint * uWaterGlint + waveTint * wave * uWaterShimmer) *
-    uWaterBrightness;
+  float glint = smoothstep(uWaterGlintEdge0, uWaterGlintEdge1, length(normal));
+  vec3 N = normalize(
+    vec3(-normal.x * uWaterSpecularNormalScale, -normal.y * uWaterSpecularNormalScale, 1.0)
+  );
+  vec3 L = length(uWaterSpecularLight) > 1e-4
+    ? normalize(uWaterSpecularLight)
+    : vec3(0.34, 0.4, 0.85);
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  vec3 H = normalize(L + V);
+  float nh = max(0.0, dot(N, H));
+  float specCoupling = uWaterSpecularCouplingFlat + uWaterSpecularCouplingGlint * glint;
+  float specular =
+    (pow(nh, uWaterSpecularShininess) +
+      pow(nh, uWaterSpecularSheenPower) * uWaterSpecularSheenWeight) *
+    uWaterSpecular * specCoupling;
+  vec3 color = (uWaterBase + uWaterGlintTint * glint * uWaterGlint) * uWaterBrightness;
   float surfaceLine = exp(-pow(surfaceDistance / max(0.002, uSurfaceWidth * 0.28), 2.0));
   float splash = surfaceLine * smoothstep(0.015, 0.14, abs(h) + length(normal) * 0.7);
-  vec3 foamA = vec3(0.05, 0.12, 0.24);
-  vec3 foamB = vec3(0.08, 0.18, 0.32);
-  color += foamA * surfaceLine * uWaterFoam;
-  color += foamB * splash * uWaterFoam;
+  color += uWaterFoamA * surfaceLine * uWaterFoam;
+  color += uWaterFoamB * splash * uWaterFoam;
 
   float luma = dot(color, vec3(0.299, 0.587, 0.114));
   color = mix(vec3(luma), color, clamp(uWaterSaturation, 0.0, 2.0));
+  color += uWaterSpecularTint * specular * uWaterBrightness;
 
   float airNear = uWaterSurfaceBlend * 0.375;
   float airFar = uWaterSurfaceBlend * 1.625;
   float airFade = smoothstep(surfaceHeight - airNear, surfaceHeight + airFar, imageUv.y);
-  vec3 topColor = cameraColor(vUv).rgb;
+  vec3 topColor =
+    cameraColorRefracted(vUv, normal, personAlpha, surfaceDistance);
   color = mix(topColor, color, airFade * uWaterAlpha);
 
   // Blend silhouette to camera by mask — avoid color * personAlpha (crushes to black on edges).
@@ -640,7 +857,10 @@ export class WaterRenderer {
       uDamping: this.settings.damping,
       uRestoringForce: this.settings.restoringForce,
       uMotionImpulse: this.settings.motionImpulse,
-      uEdgeImpulse: this.settings.edgeImpulse,
+      // uEdgeImpulse: this.settings.edgeImpulse,
+      // uEdgeRippleSpatial: this.settings.edgeRippleSpatialScale,
+      // uEdgeRippleTime: this.settings.edgeRippleTimeScale,
+      // uMaskEdgeGain: this.settings.maskEdgeGain,
       uSurfaceSplash: this.settings.surfaceSplash,
       uSurfaceWidth: this.settings.surfaceWidth,
     });
@@ -680,10 +900,44 @@ export class WaterRenderer {
         this.settings.waterColor.b,
       ],
       uWaterGlint: this.settings.waterGlint,
-      uWaterShimmer: this.settings.waterShimmer,
+      uWaterGlintTint: [
+        this.settings.waterGlintColor.r,
+        this.settings.waterGlintColor.g,
+        this.settings.waterGlintColor.b,
+      ],
+      uWaterGlintEdge0: this.settings.waterGlintNormalMin,
+      uWaterGlintEdge1: this.settings.waterGlintNormalMax,
+      uWaterSpecular: this.settings.waterSpecular,
+      uWaterSpecularTint: [
+        this.settings.waterSpecularColor.r,
+        this.settings.waterSpecularColor.g,
+        this.settings.waterSpecularColor.b,
+      ],
+      uWaterSpecularShininess: this.settings.waterSpecularShininess,
+      uWaterSpecularSheenWeight: this.settings.waterSpecularSheenWeight,
+      uWaterSpecularSheenPower: this.settings.waterSpecularSheenPower,
+      uWaterSpecularCouplingFlat: this.settings.waterSpecularCouplingFlat,
+      uWaterSpecularCouplingGlint: this.settings.waterSpecularCouplingGlint,
+      uWaterSpecularLight: [
+        this.settings.waterSpecularLightX,
+        this.settings.waterSpecularLightY,
+        this.settings.waterSpecularLightZ,
+      ],
+      uWaterSpecularNormalScale: this.settings.waterSpecularNormalScale,
       uWaterFoam: this.settings.waterFoam,
+      uWaterFoamA: [
+        this.settings.waterFoamColorA.r,
+        this.settings.waterFoamColorA.g,
+        this.settings.waterFoamColorA.b,
+      ],
+      uWaterFoamB: [
+        this.settings.waterFoamColorB.r,
+        this.settings.waterFoamColorB.g,
+        this.settings.waterFoamColorB.b,
+      ],
       uWaterSaturation: this.settings.waterSaturation,
       uWaterSurfaceBlend: this.settings.waterSurfaceBlend,
+      uWaterRefraction: this.settings.waterRefraction,
     });
     twgl.drawBufferInfo(gl, this.quad);
   }
